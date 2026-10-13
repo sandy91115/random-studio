@@ -1,0 +1,78 @@
+name: Random Studio VPS Auto Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: randomstudio-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Deploy NestJS to VPS
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: 22
+          command_timeout: 20m
+          script: |
+            set -e
+
+            APP="/home/randomstudio/web/randomstudio.in/public_html"
+            cd "$APP"
+
+            echo "=== VERIFY REPOSITORY ==="
+            test "$(git branch --show-current)" = "main"
+            test -z "$(git status --porcelain)"
+
+            echo "=== GIT UPDATE ==="
+            git fetch origin main
+            git merge --ff-only origin/main
+
+            echo "=== INSTALL DEPENDENCIES ==="
+            corepack pnpm install --frozen-lockfile
+
+            echo "=== BUILD NESTJS ==="
+            corepack pnpm run build
+
+            echo "=== VERIFY BUILD ==="
+            test -f dist/main.js
+
+            echo "=== RESTART SERVICE ==="
+            sudo -n /usr/bin/systemctl restart randomstudio.service
+
+            echo "=== VERIFY SERVICE ==="
+            for attempt in 1 2 3 4 5 6 7 8 9 10; do
+              if curl --fail --silent \
+                http://127.0.0.1:3105/ -o /dev/null; then
+                echo "NestJS service healthy"
+                break
+              fi
+              sleep 2
+            done
+
+            curl --fail --silent --show-error \
+              http://127.0.0.1:3105/ -o /dev/null
+
+            echo "=== DEPLOYED COMMIT ==="
+            git log -1 --oneline
+
+            echo "=== DEPLOYMENT SUCCESS ==="
+
+      - name: Verify Live Website
+        run: |
+          curl --fail --silent --show-error \
+            https://randomstudio.in/ \
+            -o /dev/null
